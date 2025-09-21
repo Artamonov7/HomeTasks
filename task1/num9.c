@@ -33,6 +33,8 @@ int main()
     a = 0, b = 0, c = 0;
     d = (a == b >= c);
     printf("a = %d, b = %d, c = %d => (a == b >= c) = %d \n", a, b, c, d);
+    
+    printf("program ends");
     return 0;
 
 }
