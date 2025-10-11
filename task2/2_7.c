@@ -5,6 +5,8 @@ jmp_buf begin;
 
 char curlex;
 
+int deep, maxdeep;
+
 void getlex(void);
 
 int expr(void);
@@ -63,9 +65,16 @@ int mult()
         case '0': case '1': case '2': case '3': case '4': case '5': 
         case '6': case '7': case '8': case '9': m = curlex - '0';
         break;
-        case '(': getlex(); 
+        case '(': getlex();
+		deep++;
                 m = expr();
-        if (curlex == ')') break;
+        if (curlex == ')') {
+		if (deep > maxdeep){
+			maxdeep = deep;	
+		}
+		deep--;
+		break;
+	}
         default : error();
     }
     getlex();
@@ -85,12 +94,14 @@ int mult()
 int main(void)
 {
     int result;
+    deep = 0, maxdeep = 0;
     setjmp(begin);
     printf("==>");
     getlex();
     result = expr();
     if (curlex != '\n') error();
     printf("\n%d\n", result);
+    printf("%d\n", maxdeep);
     return 0;
 }
 
