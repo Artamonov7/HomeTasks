@@ -45,6 +45,7 @@ int main(int argc, char **argv)
             if (c == '\n')
                 flag = 1;
         }
+        flag = 0;
         fclose(f);
     }
 }
