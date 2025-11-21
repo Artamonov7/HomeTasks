@@ -25,7 +25,7 @@ int main(int argc, char **argv)
     int used = 0, given = 0;
     while ((used = read(f1, buf, sizeof(char)*1024)) > 0){
         while (given != used)
-            given += write(f2, buf, sizeof(char)*(used - given));
+            given += write(f2, buf + given, sizeof(char)*(used - given));
         given = 0;
     }
 
