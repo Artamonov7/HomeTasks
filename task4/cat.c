@@ -30,11 +30,15 @@ int main(int argc, char **argv)
     parse_options(argc, argv, &n);
     for (i = 1 + n; i < argc; i++){
         f = fopen(argv[i], "r");
+        if (f == NULL){
+            perror("fopen");
+            continue;
+        }
         if (n == 1)
             printf("%d ", line++);
         while ((c = fgetc(f)) != EOF){
             if (flag && n){
-                printf("%d ", line);
+                printf("%d ", line++);
                 flag = 0;
             }
             printf("%c", c);
