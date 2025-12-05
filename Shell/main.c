@@ -180,6 +180,7 @@ struct user_cmd *parse_cmd(struct token_list *tlist)
 
 void print_cmd(struct user_cmd *cmd)
 {
+#ifdef PRINT_DEBUG
     struct conveyor_elem *conv = cmd->conv;
     while (conv){
         int i;
@@ -191,6 +192,7 @@ void print_cmd(struct user_cmd *cmd)
     }
     fprintf(stderr, "in: %s\nout: %s\nappend: %d\n", cmd->infile, cmd->outfile, cmd->append);
     fprintf(stderr, "background: %d\n", cmd->background);
+#endif
 }
 
 void free_cmd(struct user_cmd *cmd)

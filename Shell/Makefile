@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall
+CFLAGS = -Wall #-D PRINT_DEBUG
 SOURCES = main.c token_list.c
 OBJECTS = $(SOURCES:.c=.o)
 EXECUTABLE = shell
