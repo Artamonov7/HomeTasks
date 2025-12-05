@@ -39,6 +39,8 @@ void execute_conv(struct user_cmd *cmd)
             exit(1);
         }
         if (res == 0){
+            if (!cmd->background)
+                signal(SIGINT, SIG_DFL);
             if (in_fd != -1){
                 dup2(in_fd, 0);
                 close(in_fd);
@@ -226,6 +228,7 @@ int main(void)
     struct token_list *tlist;
     struct user_cmd *cmd;
     signal(SIGCHLD, kill_zombie);
+    signal(SIGINT, SIG_IGN);
     while (!is_input_finished()){
         welcome_user();
         tlist = read_tokens();
