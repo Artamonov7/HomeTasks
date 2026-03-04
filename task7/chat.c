@@ -11,16 +11,89 @@
 #include <arpa/inet.h>
 #include <errno.h>
 
-#define WAITING_FOR_NAME 0
-#define ONLINE 1
+enum client_state { st_wait_name, st_finished, st_online};
+
+struct token_list{
+    char **argv;
+    int size;
+    int used;
+};
+
+void add_to_list(struct token_list *tlist, char *str)
+{
+    if (tlist->size == tlist->used){
+        tlist->size += 10;
+        tlist->argv = realloc(tlist->argv, tlist->size*sizeof(char *));
+    }
+    tlist->argv[tlist->used] = str;
+    tlist->used++;
+}
+
+void delete_token_list(struct token_list *tlist)
+{
+    int i;
+    for (i = 0; i < tlist->used; i++)
+        free(tlist->argv[i]);
+    free(tlist->argv);
+    free(tlist);
+}
+
+static char *copy_str(char *str, int size)
+{
+    char *copy = malloc(size + 1);
+    int i;
+    for (i = 0; i < size; i++){
+        copy[i] = str[i];
+    }
+    copy[size] = '\0';
+    return copy;
+}
+
+struct token_list *read_tokens(const char *str)
+{
+    int i, used = 0, flag = 0;
+    char buf[256];
+    struct token_list *tlist = malloc(sizeof(struct token_list));
+    memset(tlist, 0, sizeof(struct token_list));
+    for(i = 0; str[i]; i++){
+        if (str[i] == '"'){
+            flag = !flag;
+            continue;
+        }
+        if ((str[i] == ' ' || str[i] == '\t' || str[i] == '\n') && !flag){
+            if (used > 0){
+                add_to_list(tlist, copy_str(buf, used));
+                used = 0;
+            }
+            continue;
+        }
+        if (used >= sizeof(buf)){
+            delete_token_list(tlist);
+            return NULL;
+        }
+        buf[used++] = str[i];
+    }
+
+    if (used > 0){
+        add_to_list(tlist, copy_str(buf, used));
+    }
+    add_to_list(tlist, NULL);
+    tlist->used--;
+    return tlist;
+}
+
+struct private_names {
+    char *name;
+    struct private_names *next;
+};
 
 struct client {
     int sockfd;
     char buf[1024];
     int buf_used;
-    int finished;
     char *name;
-    int status;
+    enum client_state state;
+    struct private_names *p_names;
 };
 
 struct client_list {
@@ -48,12 +121,58 @@ void delete_client(struct client *cl)
     free(cl);
 }
 
+void add_to_private_names(struct client *cl, const char *name)
+{
+    struct private_names *tmp;
+    if (cl->p_names == NULL){
+        cl->p_names = malloc(sizeof(struct private_names));
+        cl->p_names->name = malloc(strlen(name) + 1);
+        strcpy(cl->p_names->name, name);
+        cl->p_names->next = NULL;
+        return;
+    }
+
+    for (tmp = cl->p_names; tmp; tmp = tmp->next){
+        if (!strcmp(tmp->name, name))
+            return;
+        if (!tmp->next){
+            tmp->next = malloc(sizeof(struct private_names));
+            tmp->next->name = malloc(strlen(name) + 1);
+            strcpy(tmp->next->name, name);
+            tmp->next->next = NULL;
+            return;
+        }
+    }
+}
+
+void delete_private_names(struct client *cl)
+{
+    struct private_names *current;
+    struct private_names *next;
+    
+    if (cl == NULL) {
+        return;
+    }
+    
+    current = cl->p_names;
+    while (current != NULL) {
+        next = current->next;
+        free(current->name);
+        free(current);
+        current = next;
+    }
+    
+    cl->p_names = NULL;
+}
+
 void finish_sessions(struct client_list **list)
 {
     while (*list){
-        if ((*list)->sess->finished){
+        if ((*list)->sess->state == st_finished){
             struct client_list *tmp = *list;
             *list = (*list)->next;
+            free(tmp->sess->name);
+            delete_private_names(tmp->sess);
             delete_client(tmp->sess);
             free(tmp);
         }
@@ -88,86 +207,134 @@ void accept_client(struct chat_server *cs)
     cl = malloc(sizeof(struct client));
     memset(cl, 0, sizeof(struct client));
     cl->sockfd = sock;
-    cl->status = WAITING_FOR_NAME;
+    cl->state = st_wait_name;
+    cl->p_names = NULL;
     add_client(&cs->sessions, cl);
     send_string(cl, "Hello, enter your name: ");
     fprintf(stderr, "connection from %s:%u\n",
         inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
 }
 
+struct client *find_client(struct chat_server *cs, const char *name)
+{
+    struct client_list *tmp;;
+    for (tmp = cs->sessions; tmp; tmp = tmp->next){
+        if (!strcmp(tmp->sess->name, name))
+            return tmp->sess;
+    }
+    return NULL;
+}
+
+void name_handling(struct chat_server *cs, struct client *cl, const char *str)
+{
+        char buf[128];
+        int len = strlen(str);
+        if (len > 24){
+            send_string(cl, "name is 24 character max\n");
+            return;
+        }
+        cl->name = malloc(len + 1);
+        strcpy(cl->name, str);
+        cl->state = st_online;
+        
+        snprintf(buf, sizeof(buf), "%s entered the room\n", cl->name);
+        broadcast_message(cs->sessions, buf);
+}
+
+void message_handling(struct chat_server *cs, struct client *cl, const char *str)
+{
+    char buf[2048];
+    snprintf(buf, sizeof(buf), "%s: %s\n", cl->name, str);
+    broadcast_message(cs->sessions, buf);
+}
+
+void command_users(struct chat_server *cs, struct client *cl)
+{
+    struct client_list *tmp;
+    for (tmp = cs->sessions; tmp; tmp = tmp->next){
+        send_string(cl, tmp->sess->name);
+        send_string(cl, "\n");
+    }
+}
+
+void command_quit(struct chat_server *cs, struct client *cl, char **argv, int argc)
+{
+    char buf[256];
+    if (argc == 1)
+        snprintf(buf, sizeof(buf), "%s left the room\n", cl->name);
+    else
+        snprintf(buf, sizeof(buf), "%s left the room with message: %s\n", cl->name, argv[1]);
+
+    broadcast_message(cs->sessions, buf);
+    cl->state = st_finished;
+}
+
+void command_private(struct chat_server *cs, struct client *cl, char **argv, int argc)
+{
+    char buf[256];
+    if (argc != 3){
+        send_string(cl, "use command: /private <nickname> \"<message>\"\n");
+        return;
+    }
+    printf("%s\n", argv[1]);
+
+    struct client *dest = find_client(cs, argv[1]);
+    if (!dest){
+        send_string(cl, "client not found\n");
+        return;
+    }
+    add_to_private_names(cl, dest->name);
+    snprintf(buf, sizeof(buf), "%s [private]: %s\n", cl->name, argv[2]);
+    send_string(dest, buf);
+}
+
+void command_privates(struct client *cl)
+{
+    struct private_names *tmp;
+    for (tmp = cl->p_names; tmp; tmp = tmp->next){
+        send_string(cl, tmp->name);
+        send_string(cl, "\n");
+    }
+
+}
+
+void command_help(struct client *cl)
+{
+    char buf[]="/users\n/quit \"<message>\"\n/private <nickname> \"<message>\"\n/privates\n/help\n";
+    send_string(cl, buf);
+}
+
 void handle_string(struct chat_server *cs, struct client *cl, const char *str)
 {
-    int i, j;
-    if (cl->status == WAITING_FOR_NAME){
-        cl->name = malloc(strlen(str) + 1);
-        strcpy(cl->name, str);
-        cl->status = ONLINE;
-
-        const char welcome[] = " entered the room!\n";
-        int length = strlen(cl->name) + strlen(welcome) + 1;
-        char *mesg = malloc(length);
-        for (i = 0; i < strlen(cl->name); i++)
-            mesg[i] = cl->name[i];
-        for (j = 0; j < strlen(welcome); j++)
-            mesg[i + j] = welcome[j];
-        mesg[i + j] = '\0';
-
-        broadcast_message(cs->sessions, mesg);
-        free(mesg);
-        return;
-    }
-
-    if (!strcmp(str, "/users")){
-        struct client_list *tmp;
-        for (tmp = cs->sessions; tmp; tmp = tmp->next){
-            send_string(cl, tmp->sess->name);
-            send_string(cl, "\n");
-        }
+    if (cl->state == st_wait_name){
+        name_handling(cs, cl, str);
         return;
     }
     
-    char *checkquit = malloc(strlen("/quit ") + 1);
-    for (i = 0; i < strlen("/quit "); i++)
-        checkquit[i] = str[i];
-    checkquit[i] = '\0';
-
-    if (!strcmp(checkquit, "/quit ")){
-        const char goodbye[] = " left the room with message: ";
-        int length = strlen(cl->name) + strlen(goodbye) + strlen(str) - strlen("/quit ") + 3;
-        char *mesg = malloc(length);
-        for (i = 0; i < strlen(cl->name); i++)
-            mesg[i] = cl->name[i];
-        for (j = 0; j < strlen(goodbye); j++)
-            mesg[i + j] = goodbye[j];
-        int k;
-        for (k = 0; k < strlen(str) - 6; k++){
-            mesg[i + j + k] = str[k + 6];
-        }
-        mesg[i + j + k] = '\n';
-        mesg[i + j + k + 1] = '\0';
-
-        broadcast_message(cs->sessions, mesg);
-        free(mesg);
-        cl->finished = 1;
-        free(checkquit);
+    if (str[0] != '/'){
+        message_handling(cs, cl, str);
         return;
     }
-    free(checkquit);
+    struct token_list *tlist = read_tokens(str);
+    if (!tlist) {
+        send_string(cl, "command parsing failed\n");
+        return;
+    }
+    
+    if (!strcmp(tlist->argv[0], "/users"))
+        command_users(cs, cl);
+    else if (!strcmp(tlist->argv[0], "/quit"))
+        command_quit(cs, cl, tlist->argv, tlist->used);
+    else if (!strcmp(tlist->argv[0], "/private"))
+        command_private(cs, cl, tlist->argv, tlist->used);
+    else if (!strcmp(tlist->argv[0], "/privates"))
+        command_privates(cl);
+    else if(!strcmp(tlist->argv[0], "/help"))
+        command_help(cl);
+    else
+        send_string(cl, "command not found\n");
 
-    int length = strlen(cl->name) + strlen(str) + 4;
-    char *mesg = malloc(length);
-    
-    for (i = 0; i < strlen(cl->name); i++)
-        mesg[i] = cl->name[i];
-    mesg[i] = ':';
-    mesg[i + 1] = ' ';
-    for (j = 0; j < strlen(str); j++)
-        mesg[i + 2 + j] = str[j];
-    mesg[i + 2 + j] = '\n';
-    mesg[i + 2 + j + 1] = '\0';
-    
-    broadcast_message(cs->sessions, mesg);
-    free(mesg);
+    delete_token_list(tlist);
 }
 
 void handle_line_finish(struct chat_server *cs, struct client *cl)
@@ -200,7 +367,7 @@ void handle_client(struct chat_server *cs, struct client *cl)
 {
     int rc = read(cl->sockfd, cl->buf + cl->buf_used, sizeof(cl->buf) - cl->buf_used);
     if (rc <= 0){
-        cl->finished = 1;
+        cl->state = st_finished;
         return;
     }
     cl->buf_used += rc;
