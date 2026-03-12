@@ -1,6 +1,5 @@
-
 CC = gcc
-CFLAGS = -Wall
+CFLAGS = -Wall -Wextra -g
 TARGET = chat
 SRC = chat.c
 
@@ -12,4 +11,3 @@ $(TARGET): $(SRC)
 clean:
 	rm -f $(TARGET)
 
-.PHONY: all clean

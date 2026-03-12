@@ -11,7 +11,13 @@
 #include <arpa/inet.h>
 #include <errno.h>
 
-enum client_state { st_wait_name, st_finished, st_online, st_admin};
+static volatile sig_atomic_t server_down = 0;
+
+void signal_handler(int sig)
+{
+    if (sig == SIGINT || sig == SIGTERM)
+        server_down = 1;
+}
 
 struct token_list{
     char **argv;
@@ -67,7 +73,7 @@ struct token_list *read_tokens(const char *str)
             }
             continue;
         }
-        if (used >= sizeof(buf)){
+        if ((unsigned)used >= sizeof(buf)){
             delete_token_list(tlist);
             return NULL;
         }
@@ -81,6 +87,8 @@ struct token_list *read_tokens(const char *str)
     tlist->used--;
     return tlist;
 }
+
+enum client_state { st_wait_name, st_finished, st_online, st_admin};
 
 struct private_names {
     char *name;
@@ -107,8 +115,8 @@ struct chat_server {
     struct client_list *sessions;
     int ls;
     char *admin_password;
-    int max_private;
     char *max_private_name;
+    int max_private;
 };
 
 void add_client(struct client_list **list, struct client *cl)
@@ -119,35 +127,41 @@ void add_client(struct client_list **list, struct client *cl)
     *list = head;
 }
 
+void delete_private_names(struct client *cl);
+
 void delete_client(struct client *cl)
 {
     shutdown(cl->sockfd, 2);
     close(cl->sockfd);
+    delete_private_names(cl);
+    free(cl->name);
     free(cl);
+}
+
+void delete_clients(struct client_list *list)
+{
+    struct client_list *tmp;
+    while (list){
+        tmp = list;
+        list = list->next;
+        delete_client(tmp->sess);
+        free(tmp);
+    }
 }
 
 void add_to_private_names(struct client *cl, const char *name)
 {
     struct private_names *tmp;
-    if (cl->p_names == NULL){
-        cl->p_names = malloc(sizeof(struct private_names));
-        cl->p_names->name = malloc(strlen(name) + 1);
-        strcpy(cl->p_names->name, name);
-        cl->p_names->next = NULL;
-        return;
-    }
 
     for (tmp = cl->p_names; tmp; tmp = tmp->next){
         if (!strcmp(tmp->name, name))
             return;
-        if (!tmp->next){
-            tmp->next = malloc(sizeof(struct private_names));
-            tmp->next->name = malloc(strlen(name) + 1);
-            strcpy(tmp->next->name, name);
-            tmp->next->next = NULL;
-            return;
-        }
     }
+
+    tmp = malloc(sizeof(struct private_names));
+    tmp->next = cl->p_names;
+    tmp->name = strdup(name);
+    cl->p_names = tmp;
 }
 
 void delete_private_names(struct client *cl)
@@ -155,9 +169,8 @@ void delete_private_names(struct client *cl)
     struct private_names *current;
     struct private_names *next;
     
-    if (cl == NULL) {
+    if (cl == NULL)
         return;
-    }
     
     current = cl->p_names;
     while (current != NULL) {
@@ -176,8 +189,6 @@ void finish_sessions(struct client_list **list)
         if ((*list)->sess->state == st_finished){
             struct client_list *tmp = *list;
             *list = (*list)->next;
-            free(tmp->sess->name);
-            delete_private_names(tmp->sess);
             delete_client(tmp->sess);
             free(tmp);
         }
@@ -225,7 +236,7 @@ void accept_client(struct chat_server *cs)
 
 struct client *find_client(struct chat_server *cs, const char *name)
 {
-    struct client_list *tmp;;
+    struct client_list *tmp;
     for (tmp = cs->sessions; tmp; tmp = tmp->next){
         if (!tmp->sess->name)
             continue;
@@ -291,7 +302,6 @@ void command_private(struct chat_server *cs, struct client *cl, char **argv, int
         send_string(cl, "use command: /private <nickname> \"<message>\"\n");
         return;
     }
-    printf("%s\n", argv[1]);
 
     struct client *dest = find_client(cs, argv[1]);
     if (!dest){
@@ -306,7 +316,7 @@ void command_private(struct chat_server *cs, struct client *cl, char **argv, int
         cs->max_private_name = malloc(strlen(cl->name) + 1);
         strcpy(cs->max_private_name, cl->name);
     }
-    snprintf(buf, sizeof(buf), "%s [private]: %s\n", cl->name, argv[2]);
+    snprintf(buf, sizeof(buf), "[private] %s: %s\n", cl->name, argv[2]);
     send_string(dest, buf);
 }
 
@@ -317,12 +327,15 @@ void command_privates(struct client *cl)
         send_string(cl, tmp->name);
         send_string(cl, "\n");
     }
-
 }
 
-void command_admin(struct chat_server *cs, struct client *cl, const char *password)
+void command_admin(struct chat_server *cs, struct client *cl, char **argv, int argc)
 {
-    if (!strcmp(cs->admin_password, password)){
+    if (argc < 2){
+        send_string(cl, "no password provided\n");
+        return;
+    }
+    if (!strcmp(cs->admin_password, argv[1])){
         cl->admin_rights = 1;
         send_string(cl, "you have got admin rights\n");
     }
@@ -331,24 +344,52 @@ void command_admin(struct chat_server *cs, struct client *cl, const char *passwo
     }
 }
 
-void command_kick(struct chat_server *cs, struct client *cl, char **argv, int agrc)
+void command_kick(struct chat_server *cs, struct client *cl, char **argv, int argc)
 {
     char buf[1024];
-    struct client *kicked_cl = find_client(cs, argv[1]);
-    if (!cl->admin_rights || kicked_cl->admin_rights){
+    struct client *kicked_cl;
+    if (argc < 2){
+        send_string(cl, "use command: /kick <nickname> \"<message>\"\n");
+        return;
+    }
+    if (!cl->admin_rights){
         send_string(cl, "you dont have such rights\n");
         return;
-    
     }
-    snprintf(buf, sizeof(buf), "you were kicked for a reason: %s\n", argv[2]);
-    send_string(kicked_cl, buf);
+    kicked_cl = find_client(cs, argv[1]);
+    if (!kicked_cl){
+        send_string(cl, "there is no such client\n");
+        return;
+    }
+    if (kicked_cl->admin_rights){
+        send_string(cl, "this user is administrator\n");
+        return;
+    }
+    if (argc == 2){
+        send_string(kicked_cl, "you were kicked\n");
+    }
+    else {
+        snprintf(buf, sizeof(buf), "you were kicked for a reason: %s\n", argv[2]);
+        send_string(kicked_cl, buf);
+    }
     kicked_cl->state = st_finished;
 }
 
 void command_nick(struct chat_server *cs, struct client *cl, char **argv, int argc)
 {
     char buf[1024];
-    struct client *new_nick_cl = find_client(cs, argv[1]);
+    struct client *new_nick_cl;
+
+    if (argc < 3){
+        send_string(cl, "use command: /nick <nickname> <newnickname>\n");
+        return;
+    }
+
+    new_nick_cl = find_client(cs, argv[1]);
+    if (!new_nick_cl){
+        send_string(cl, "user not found\n");
+        return;
+    }
     if ((!cl->admin_rights || new_nick_cl->admin_rights) && (cl != new_nick_cl)){
         send_string(cl, "you dont have such rights\n");
         return;
@@ -360,29 +401,36 @@ void command_nick(struct chat_server *cs, struct client *cl, char **argv, int ar
     send_string(new_nick_cl, buf);
 }
 
-void destroy_server(struct chat_server *cs);
-
-void command_shutdown(struct chat_server *cs, struct client *cl, const char *msg)
+void command_shutdown(struct chat_server *cs, struct client *cl, char **argv, int argc)
 {
     char buf[1024];
     if (!cl->admin_rights){
         send_string(cl, "you dont have such rights\n");
         return;
     }
-    if (msg){
-        snprintf(buf, sizeof(buf), "server closed with message: %s\n", msg);
+    if (argc > 1){
+        snprintf(buf, sizeof(buf), "server closed with message: %s\n", argv[1]);
         broadcast_message(cs->sessions, buf);
     }
     else {
         broadcast_message(cs->sessions, "server closed\n");
     }
-    destroy_server(cs);
+    server_down = 1;
 }
 
 void command_help(struct client *cl)
 {
-    char buf[]="/users\n/quit \"<message>\"\n/private <nickname> \"<message>\"\n/privates\n/help\n";
-    send_string(cl, buf);
+    send_string(cl,
+        "/users\n"
+        "/quit \"<message>\"\n"
+        "/private <nickname> \"<message>\"\n"
+        "/privates\n"
+        "/help\n"
+        "/kick <nickname> \"<message>\"\n"
+        "/nick <nickname> <newnickname>\n"
+        "/shutdown \"<message>\"\n"
+        "/admin <password>\n"
+    );
 }
 
 void handle_string(struct chat_server *cs, struct client *cl, const char *str)
@@ -417,9 +465,9 @@ void handle_string(struct chat_server *cs, struct client *cl, const char *str)
     else if (!strcmp(tlist->argv[0], "/nick"))
         command_nick(cs, cl, tlist->argv, tlist->used);
     else if (!strcmp(tlist->argv[0], "/shutdown"))
-        command_shutdown(cs, cl, tlist->argv[2]);
+        command_shutdown(cs, cl, tlist->argv, tlist->used);
     else if (!strcmp(tlist->argv[0], "/admin"))
-        command_admin(cs, cl, tlist->argv[1]);
+        command_admin(cs, cl, tlist->argv, tlist->used);
     else
         send_string(cl, "command not found\n");
 
@@ -461,7 +509,7 @@ void handle_client(struct chat_server *cs, struct client *cl)
     }
     cl->buf_used += rc;
     handle_line_finish(cs, cl);
-    if (cl->buf_used >= sizeof(cl->buf)){
+    if ((unsigned)cl->buf_used >= sizeof(cl->buf)){
         cl->buf_used = 0;
         send_string(cl, "line too long\n");
     }
@@ -472,16 +520,16 @@ void server_cycle(struct chat_server *cs)
     int res;
     fd_set readfds;
     struct client_list *tmp;
-    for (;;){
+    while (!server_down){
         int max_d = cs->ls;
         FD_ZERO(&readfds);
         FD_SET(cs->ls, &readfds);
         for (tmp = cs->sessions; tmp; tmp = tmp->next){
             FD_SET(tmp->sess->sockfd, &readfds);
-            if (tmp->sess->sockfd > max_d){
+            if (tmp->sess->sockfd > max_d)
                 max_d = tmp->sess->sockfd;
-            }
         }
+
         res = select(max_d + 1, &readfds, NULL, NULL, NULL);
         if (res < 0){
             if (errno != EINTR){
@@ -490,22 +538,20 @@ void server_cycle(struct chat_server *cs)
             }
             continue;
         }
-        if (FD_ISSET(cs->ls, &readfds)){
+
+        if (FD_ISSET(cs->ls, &readfds))
             accept_client(cs);
-        }
         for (tmp = cs->sessions; tmp; tmp = tmp->next){
-            if (FD_ISSET(tmp->sess->sockfd, &readfds)){
+            if (FD_ISSET(tmp->sess->sockfd, &readfds))
                 handle_client(cs, tmp->sess);
-            }
         }
-        printf("max private messages count: %d by %s\n", cs->max_private, cs->max_private_name);
         finish_sessions(&cs->sessions);
     }
 }
 
 struct chat_server *init_server(const char *ip, unsigned short port, char *password)
 {
-    int sockfd, ok;
+    int sockfd, ok, opt = 1;
     struct chat_server *cs;
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
@@ -520,6 +566,7 @@ struct chat_server *init_server(const char *ip, unsigned short port, char *passw
         perror("socket");
         return NULL;
     }
+    setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     ok = bind(sockfd, (struct sockaddr *)&addr, sizeof(addr));
     if (ok < 0){
         perror("bind");
@@ -541,10 +588,20 @@ struct chat_server *init_server(const char *ip, unsigned short port, char *passw
     return cs;
 }
 
+void print_stat(struct chat_server *cs)
+{
+    if (cs->max_private_name) {
+        printf("max private messages count: %d by %s\n",
+            cs->max_private, cs->max_private_name);
+    }
+}
+
 void destroy_server(struct chat_server *cs)
 {
     shutdown(cs->ls, 2);
     close(cs->ls);
+    delete_clients(cs->sessions);
+    free(cs->max_private_name);
     free(cs);
 }
 
@@ -561,7 +618,11 @@ int main(int argc, char **argv)
         fprintf(stderr, "fail to init server\n");
         return 1;
     }
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
     server_cycle(cs);
+    print_stat(cs);
+    destroy_server(cs);
     return 0;
 }
 
