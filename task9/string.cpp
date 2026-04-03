@@ -24,8 +24,8 @@ string::string(const string& other) : data(nullptr), len(0) {
 }
 
 string& string::operator=(const string& other) {
-    if (this != &other) {  // проверка на самоприсваивание
-        delete[] data;      // удаляем старые данные
+    if (this != &other){
+        delete[] data;
         len = other.len;
         data = new char[len + 1];
         strcpy(data, other.data);
