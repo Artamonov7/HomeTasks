@@ -15,7 +15,7 @@ int main() {
 
     do {
         std::cout << "\n1. Create string\n2. Create list<int>\n3. Create list<double>\n4. Create string_list\n";
-        std::cout << "5. Show all contains tests\n6. Delete object\n0. Exit\nChoice: ";
+        std::cout << "5. Show all contains tests\n6. Check length\n7. Delete object\n0. Exit\nChoice: ";
         std::cin >> choice;
 
         if (choice == 1) {
@@ -72,6 +72,14 @@ int main() {
             }
         }
         else if (choice == 6) {
+            int idx;
+            std::cout << "Index to get max length: ";
+            std::cin >> idx;
+            if (idx >= 0 && idx < (int)objects.size()) {
+                std::cout << objects[idx]->max_length() << std::endl;
+            }
+        }
+        else if (choice == 7) {
             int idx;
             std::cout << "Index to delete: ";
             std::cin >> idx;

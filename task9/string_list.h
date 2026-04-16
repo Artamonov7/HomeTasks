@@ -4,12 +4,13 @@
 #include "string.h"
 #include "list.h"
 
-class string_list : public virtual string, public virtual list<string> {
+class string_list : public string, public list<string> {
 public:
     string_list();
     virtual ~string_list();
     bool contains(const char *value) const override;
     int length() const override;
+    int max_length() const override;
     void add_string(const char *str);
 };
 

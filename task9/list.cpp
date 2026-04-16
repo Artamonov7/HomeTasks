@@ -34,7 +34,7 @@ list<T>::~list() {
 
 template<typename T>
 void list<T>::resize() {
-    cap = cap == 0 ? 2 : cap*2;
+    cap = cap == 0 ? 10 : cap*2;
     T *new_arr = new T[cap];
     for (int i = 0; i < size; ++i)
         new_arr[i] = arr[i];
