@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -Wall -Wextra -std=c++17
+CXXFLAGS = -Wall -Wextra
 TARGET = main
 
 SOURCES = main.cpp string.cpp list.cpp string_list.cpp
