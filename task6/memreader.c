@@ -1,4 +1,4 @@
-#define _POSIX_C_SOURCE 199309L
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,7 +20,7 @@ int main()
 
 	memset(&sa, 0, sizeof(struct sigaction));
 	sa.sa_handler = signal_handler;
-	sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
 
 	while (!stop_reader) {
 		char buffer[64];
